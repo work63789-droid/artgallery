@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<base href="../"><!-- backup copy: load assets from the project folder -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Art Studio — Walkthrough</title>
+<style>
+:root{--fg:#f4efe6;--bg:#0f0e0d;--glass:rgba(18,16,14,.45)}
+html,body{height:100%;margin:0;background:var(--bg);overflow:hidden;font-family:Georgia,'Times New Roman',serif;color:var(--fg)}
+canvas{display:block;width:100%;height:100%}
+#dot{position:fixed;left:50%;top:50%;width:4px;height:4px;margin:-2px;border-radius:50%;background:rgba(255,255,255,.55);pointer-events:none;box-shadow:0 0 0 1px rgba(0,0,0,.18)}
+#cap{position:fixed;left:50%;bottom:8%;transform:translateX(-50%);padding:10px 18px;background:var(--glass);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);border-radius:6px;text-align:center;opacity:0;transition:opacity .35s;pointer-events:none;font-size:15px;letter-spacing:.02em}
+#cap small{display:block;opacity:.7;font-size:12px;margin-top:3px;font-style:italic}
+#ov{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(15,14,13,.55);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);text-align:center;padding:24px;transition:opacity .6s}
+#ov h1{font-weight:400;font-size:clamp(26px,5vw,44px);margin:0 0 10px;letter-spacing:.04em}
+#ov p{margin:6px 0;opacity:.8;font-size:14px;font-family:system-ui,sans-serif}
+#bar{width:220px;height:2px;background:rgba(255,255,255,.15);margin:22px auto 0;overflow:hidden;border-radius:2px}
+#bar i{display:block;height:100%;width:0;background:var(--fg);transition:width .25s}
+#ov b{display:inline-block;margin-top:18px;padding:11px 28px;border:1px solid var(--fg);border-radius:30px;font-weight:400;letter-spacing:.12em;font-size:13px;font-family:system-ui,sans-serif;opacity:.25;transition:opacity .4s}
+#ov.ready{cursor:pointer}#ov.ready b{opacity:1}#ov.ready #bar{opacity:0}
+#msg{max-width:460px;margin:14px auto 0;color:#f2b8a0;font-size:13px;font-family:system-ui,sans-serif;line-height:1.5}
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div id="dot"></div><div id="cap"></div>
+<div id="ov"><div><h1>The Art Studio</h1>
+<p>W A S D — walk &nbsp;·&nbsp; Mouse / drag — look &nbsp;·&nbsp; Shift — run &nbsp;·&nbsp; Esc — release mouse</p>
+<p>Drop an image file onto the window to replace the artwork you are looking at.</p>
+<div id="bar"><i></i></div><b>ENTER</b><div id="msg"></div></div></div>
+<script type="module">
+import * as THREE from 'three';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
+import {RGBELoader} from 'three/addons/loaders/RGBELoader.js';
+import {GroundedSkybox} from 'three/addons/objects/GroundedSkybox.js';
+import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+import {ShaderPass} from 'three/addons/postprocessing/ShaderPass.js';
+import {Pass,FullScreenQuad} from 'three/addons/postprocessing/Pass.js';
+import {CopyShader} from 'three/addons/shaders/CopyShader.js';
+
+/* ===== EDIT ME: artworks. src = image path, w = printed width in metres, frame = 'black' | 'oak' | 'white'
+   optional: note = third line on the wall label (medium, year), mat = mat border in metres, lux = spotlight strength (default 20) ===== */
+const ARTWORKS=[
+ {src:'2.png',title:'Untitled (Nocturne)',artist:'Saba',w:1.45,frame:'black'},
+ {src:'1.png',title:'Thresholds',artist:'Saba',w:1.0,frame:'oak'},
+ {src:'WhatsApp Image 2026-09-29 at 8.47.57 PM.jpeg',title:'Rehal',artist:'Saba',w:.6,frame:'black'}];
+/* where each one hangs: point on the wall + which way it faces (1 = +z, -1 = -z) */
+const HANG=[{x:7.35,z:-5.5,f:1},{x:2.35,z:0,f:1},{x:5.9,z:6,f:-1}];
+
+const H=3.4,W=10,D=6,UX=4.7,UZ=-5.5,SILL=.42,HEAD=3.0,GX=W+.2,EYE=1.62;
+const $=s=>document.querySelector(s),ov=$('#ov'),cap=$('#cap'),msg=$('#msg'),bar=$('#bar i');
+if(location.protocol==='file:')msg.textContent='This page loads textures and 3D models, which browsers block when a file is opened directly. Serve the folder instead, e.g. run "python -m http.server" here and open http://localhost:8000, or use VS Code Live Server.';
+
+/* ---------- renderer / scene ---------- */
+const renderer=new THREE.WebGLRenderer({powerPreference:'high-performance',antialias:false,stencil:false});
+renderer.toneMapping=THREE.AgXToneMapping;renderer.toneMappingExposure=1.4;
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.shadowMap.autoUpdate=false;
+document.body.prepend(renderer.domElement);const dom=renderer.domElement;
+const ANI=Math.min(16,renderer.capabilities.getMaxAnisotropy());
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xdde6ee);
+const cam=new THREE.PerspectiveCamera(58,1,.05,500);cam.rotation.order='YXZ';
+const pmrem=new THREE.PMREMGenerator(renderer);
+
+/* ---------- loading ---------- */
+const LM=new THREE.LoadingManager(),errs=[];
+LM.onProgress=(u,l,t)=>bar.style.width=(100*l/t)+'%';LM.onError=u=>errs.push(u);
+const TL=new THREE.TextureLoader(LM),GL=new GLTFLoader(LM),HL=new RGBELoader(LM),pending=[];
+const tx=(url,size,srgb)=>{const t=TL.load('assets/tex/'+url);t.wrapS=t.wrapT=THREE.RepeatWrapping;t.anisotropy=ANI;t.repeat.set(1/size,1/size);if(srgb)t.colorSpace=THREE.SRGBColorSpace;return t};
+
+/* ---------- box-projected reflections: glossy surfaces reflect the room in the right place ---------- */
+const BP={pos:{value:new THREE.Vector3(W/2,H/2,(UZ+D)/2)},size:{value:new THREE.Vector3(W,H,D-UZ)}};
+const BP_CHUNK=THREE.ShaderChunk.envmap_physical_pars_fragment.replaceAll('reflectVec = inverseTransformDirection( reflectVec, viewMatrix );','reflectVec = inverseTransformDirection( reflectVec, viewMatrix );\n\t\t\treflectVec = bpCorrect( reflectVec );');
+/* baked-in ambient occlusion for the static room: indirect light fades into every crease (cheaper and cleaner than screen-space AO) */
+const f3=v=>v.toFixed(3),ROOM_AO=`float crAO(float d){return 1.-.42*exp(-max(d,0.)/.2);}
+float roomAO(vec3 p,vec3 n){vec3 a=abs(n);float o=1.;
+ if(a.x<.5){o*=crAO(p.x);if(p.x<${f3(W+.001)})o*=crAO(${f3(W)}-p.x);if(p.z<0.)o*=crAO(p.x-${f3(UX)});}
+ if(a.y<.5){o*=crAO(p.y);o*=crAO(${f3(H)}-p.y);}
+ if(a.z<.5){o*=crAO(${f3(D)}-p.z);o*=crAO(p.x<${f3(UX)}?p.z:p.z+${f3(-UZ)});}
+ return o;}
+`;
+function patch(m,bp,ao){m.onBeforeCompile=s=>{let f='varying vec3 vW,vWN;\n';
+ s.vertexShader='varying vec3 vW,vWN;\n'+s.vertexShader.replace('#include <project_vertex>','#include <project_vertex>\n\tvW=(modelMatrix*vec4(transformed,1.)).xyz;vWN=mat3(modelMatrix)*objectNormal;');
+ if(bp){s.uniforms.bpPos=BP.pos;s.uniforms.bpSize=BP.size;f+='uniform vec3 bpPos,bpSize;\nvec3 bpCorrect(vec3 v){vec3 n=normalize(v),a=(bpPos+.5*bpSize-vW)/n,b=(bpPos-.5*bpSize-vW)/n,m=max(a,b);return vW+n*min(min(m.x,m.y),m.z)-bpPos;}\n';s.fragmentShader=s.fragmentShader.replace('#include <envmap_physical_pars_fragment>',BP_CHUNK)}
+ if(ao){f+=ROOM_AO;s.fragmentShader=s.fragmentShader.replace('#include <aomap_fragment>','#include <aomap_fragment>\n\treflectedLight.indirectDiffuse*=roomAO(vW,normalize(vWN));')}
+ s.fragmentShader=f+s.fragmentShader};
+ m.customProgramCacheKey=()=>'p'+(+bp)+(+ao);return m}
+const boxProject=m=>patch(m,true,false);
+
+/* ---------- materials ---------- */
+const floorM=patch(new THREE.MeshPhysicalMaterial({map:tx('herringbone_parquet_diff_2k.jpg',3.4,1),normalMap:tx('herringbone_parquet_nor_gl_2k.jpg',3.4),roughnessMap:tx('herringbone_parquet_rough_2k.jpg',3.4),roughness:1.35,specularIntensity:.35,normalScale:new THREE.Vector2(.6,.6),clearcoat:.22,clearcoatRoughness:.1}),true,true);
+const plasterN=tx('plastered_wall_nor_gl_1k.jpg',2.2);
+const wallM=patch(new THREE.MeshStandardMaterial({color:0xefebe4,roughness:.93,normalMap:plasterN,normalScale:new THREE.Vector2(.12,.12)}),false,true);
+const ceilM=patch(new THREE.MeshStandardMaterial({color:0xf6f6f5,roughness:.96,normalMap:plasterN,normalScale:new THREE.Vector2(.08,.08)}),false,true);
+/* walls block the sun with both faces, so no light slips through corner seams */
+wallM.shadowSide=ceilM.shadowSide=THREE.DoubleSide;
+const trimM=patch(new THREE.MeshStandardMaterial({color:0xf3f1ec,roughness:.42}),true,true);
+const steelM=boxProject(new THREE.MeshStandardMaterial({color:0x161616,roughness:.42,metalness:.55}));
+const sillM=boxProject(new THREE.MeshStandardMaterial({color:0xe7e3dc,roughness:.3}));
+const doorM=boxProject(new THREE.MeshStandardMaterial({color:0x3a2a1f,roughness:.48}));
+const brassM=boxProject(new THREE.MeshStandardMaterial({color:0xc8a45c,roughness:.28,metalness:1}));
+const glassM=boxProject(new THREE.MeshStandardMaterial({color:0,roughness:.03,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+const lensM=new THREE.MeshBasicMaterial({color:new THREE.Color(1,.93,.82).multiplyScalar(6)});
+
+/* soft contact shadows under furniture and behind frames */
+const blobT=(()=>{const n=128,c=document.createElement('canvas');c.width=c.height=n;const x=c.getContext('2d'),d=x.createImageData(n,n);
+ for(let j=0;j<n;j++)for(let i=0;i<n;i++){const u=Math.abs(i/(n-1)*2-1),v=Math.abs(j/(n-1)*2-1),k=.45,q=Math.hypot(Math.max(u-k,0),Math.max(v-k,0))/(1-k),a=Math.pow(Math.max(0,1-q),2.4),o=(j*n+i)*4;d.data[o]=d.data[o+1]=d.data[o+2]=a*255;d.data[o+3]=255}
+ x.putImageData(d,0,0);return new THREE.CanvasTexture(c)})();
+const blob=(sx,sz,op)=>{const m=new THREE.Mesh(new THREE.PlaneGeometry(sx,sz),new THREE.MeshBasicMaterial({color:0,alphaMap:blobT,transparent:true,opacity:op,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-4}));return m};
+
+/* world-space UVs in metres so textures keep a real-world scale on every surface */
+function wuv(g){const p=g.attributes.position,n=g.attributes.normal,uv=g.attributes.uv;for(let i=0;i<p.count;i++){const ax=Math.abs(n.getX(i)),ay=Math.abs(n.getY(i)),az=Math.abs(n.getZ(i));
+ if(ax>=ay&&ax>=az)uv.setXY(i,p.getZ(i),p.getY(i));else if(ay>=az)uv.setXY(i,p.getX(i),p.getZ(i));else uv.setXY(i,p.getX(i),p.getY(i))}uv.needsUpdate=true;return g}
+const box=(x0,x1,y0,y1,z0,z1,m=wallM,cast=true)=>{const b=new THREE.Mesh(wuv(new THREE.BoxGeometry(x1-x0,y1-y0,z1-z0).translate((x0+x1)/2,(y0+y1)/2,(z0+z1)/2)),m);b.castShadow=cast;b.receiveShadow=true;scene.add(b);return b};
+
+/* ---------- L-shaped floor & ceiling ---------- */
+const sh=new THREE.Shape();[[0,0],[UX,0],[UX,-UZ],[W,-UZ],[W,-D],[0,-D]].forEach(([a,b],i)=>i?sh.lineTo(a,b):sh.moveTo(a,b));
+const slab=(y,m)=>{const s=new THREE.Mesh(new THREE.ExtrudeGeometry(sh,{depth:.2,bevelEnabled:false}),m);s.rotation.x=-Math.PI/2;s.position.y=y;s.receiveShadow=s.castShadow=true;scene.add(s)};
+slab(-.2,floorM);slab(H,ceilM);
+/* roof overhanging every wall, so the sun can't sneak through the wall/ceiling seams */
+box(-.35,W+.4,H+.02,H+.4,UZ-.35,D+.35,ceilM).receiveShadow=false;
+
+/* ---------- walls, door ---------- */
+const DZ0=2.55,DZ1=3.55,DH=2.2;
+box(-.2,0,0,H,-.2,DZ0);box(-.2,0,DH,H,DZ0,DZ1);box(-.2,0,0,H,DZ1,D+.2);
+box(-.2,UX,0,H,-.2,0);box(UX-.2,UX,0,H,UZ-.2,0);box(UX-.2,W+.3,0,H,UZ-.2,UZ);box(-.2,W+.3,0,H,D,D+.2);
+box(-.13,-.08,0,DH,DZ0,DZ1,doorM);[[.2,1.0],[1.2,2.0]].forEach(([a,b])=>box(-.08,-.07,a,b,DZ0+.13,DZ1-.13,doorM));
+box(0,.022,0,DH+.08,DZ0-.08,DZ0,trimM);box(0,.022,0,DH+.08,DZ1,DZ1+.08,trimM);box(0,.022,DH,DH+.08,DZ0-.08,DZ1+.08,trimM);
+box(-.08,-.06,1.02,1.05,DZ1-.14,DZ1-.1,brassM);box(-.06,-.02,1.025,1.045,DZ1-.26,DZ1-.1,brassM);
+/* skirting */
+const sk=.1,st=.016;box(0,UX,0,sk,0,st,trimM);box(UX,UX+st,0,sk,UZ,0,trimM);box(UX,W,0,sk,UZ,UZ+st,trimM);box(0,W,0,sk,D-st,D,trimM);
+box(0,st,0,sk,0,DZ0-.08,trimM);box(0,st,0,sk,DZ1+.08,D,trimM);box(W-st,W,0,sk,UZ,D,trimM);
+
+/* ---------- steel-framed window wall ---------- */
+const bays=[];{let z=UZ;const p=.46,bw=2.3;box(W,W+.3,0,SILL,UZ-.2,D+.2);box(W,W+.3,HEAD,H,UZ-.2,D+.2);
+for(let i=0;i<5;i++){box(W,W+.3,SILL,HEAD,i?z:UZ-.2,i==4?D+.2:z+p);z+=p;if(i<4){bays.push([z,z+bw]);z+=bw}}}
+bays.forEach(([z0,z1])=>{const bw=z1-z0,f=.045,bar=(y0,y1,a,b)=>box(GX-.03,GX+.02,y0,y1,a,b,steelM);
+ bar(SILL,SILL+f,z0,z1);bar(HEAD-f,HEAD,z0,z1);bar(SILL,HEAD,z0,z0+f);bar(SILL,HEAD,z1-f,z1);
+ for(let k=1;k<3;k++){const zc=z0+bw*k/3;bar(SILL,HEAD,zc-.016,zc+.016)}
+ for(let k=1;k<3;k++){const yc=SILL+(HEAD-SILL)*k/3;bar(yc-.016,yc+.016,z0,z1)}
+ box(W-.05,GX-.03,SILL-.035,SILL,z0,z1,sillM);
+ const g=new THREE.Mesh(new THREE.PlaneGeometry(bw,HEAD-SILL),glassM);g.rotation.y=-Math.PI/2;g.position.set(GX-.035,(SILL+HEAD)/2,(z0+z1)/2);scene.add(g);
+ });
+/* faint cool sky fill (diffuse only, so it never shows up as a fake reflection) */
+scene.add(new THREE.HemisphereLight(0xe9eef6,0xd2c8bd,.34));
+
+/* ---------- sun ---------- */
+const SUN_EL=.56,SUN_AZ=-.38,SUN=new THREE.Vector3(Math.cos(SUN_EL)*Math.cos(SUN_AZ),Math.sin(SUN_EL),Math.cos(SUN_EL)*Math.sin(SUN_AZ));
+const sun=new THREE.DirectionalLight(0xffe6c8,5.2);sun.target.position.set(6,0,.25);sun.position.copy(sun.target.position).addScaledVector(SUN,30);
+sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-9,right:9,top:9,bottom:-9,near:12,far:50});sun.shadow.bias=-.0004;sun.shadow.normalBias=.03;
+scene.add(sun,sun.target);
+
+/* ---------- outdoors: real HDRI, projected onto a ground plane so it has parallax ---------- */
+pending.push(HL.loadAsync('assets/hdri/symmetrical_garden_02_2k.hdr').then(t=>{
+ const {data,width:iw,height:ih}=t.image;let best=-1,bu=0;
+ for(let y=0;y<ih/2;y+=2)for(let x=0;x<iw;x+=2){const v=THREE.DataUtils.fromHalfFloat(data[(y*iw+x)*4+1]);if(v>best){best=v;bu=(x+.5)/iw}}
+ const psiL=Math.atan2(-Math.sin(2*Math.PI*bu),-Math.cos(2*Math.PI*bu));
+ const sky=new GroundedSkybox(t,3,180);sky.position.set(W+4,3-.45,(UZ+D)/2);sky.rotation.y=psiL-SUN_AZ;sky.material.color.setScalar(1.5);scene.add(sky);
+ /* outdoor objects are lit by the real sky, not the room */
+ t.mapping=THREE.EquirectangularReflectionMapping;const env=pmrem.fromEquirectangular(t).texture;paveM.envMap=env}));
+/* stone terrace just outside the glass, so the nearest ground has real depth */
+const paveM=new THREE.MeshStandardMaterial({map:tx('concrete_pavers_diff_1k.jpg',1.92,1),normalMap:tx('concrete_pavers_nor_gl_1k.jpg',1.92),roughnessMap:tx('concrete_pavers_rough_1k.jpg',1.92),color:0xd8d2c8});
+box(W+.3,W+5.5,-.45,-.1,UZ-4,D+4,paveM,false);
+
+/* ---------- artworks ---------- */
+const FRAMES={black:{color:0x141414,roughness:.38},oak:{color:0xb3926a,roughness:.55},white:{color:0xf1efe9,roughness:.4}};
+const matM=new THREE.MeshStandardMaterial({color:0xf2efe8,roughness:.95}),coreM=new THREE.MeshStandardMaterial({color:0xfbfaf6,roughness:.9});
+const artGlassM=glassM.clone();boxProject(artGlassM);artGlassM.opacity=.7;
+const artMeshes=[],artGroups=[];
+function label(a){const c=document.createElement('canvas');c.width=512;c.height=300;const x=c.getContext('2d');x.fillStyle='#f7f5f0';x.fillRect(0,0,512,300);
+ x.fillStyle='#1d1d1d';x.font='600 40px Georgia';x.fillText(a.artist,34,78);x.font='italic 34px Georgia';x.fillStyle='#333';x.fillText(a.title,34,134);
+ x.font='26px Georgia';x.fillStyle='#777';x.fillText(a.note||'',34,186);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=ANI;return t}
+function hang(i,t){
+ if(artGroups[i]){scene.remove(artGroups[i]);artGroups[i].traverse(o=>{if(o.isLight&&o.shadow.map)o.shadow.map.dispose()})}
+ const a=ARTWORKS[i],h=HANG[i],ar=t.image.width/t.image.height,w=a.w,ht=w/ar,m=a.mat??Math.min(.15,.11*Math.max(w,ht)+.035),fw=.03,fd=.045,W2=w+2*m,H2=ht+2*m;
+ const g=new THREE.Group(),cy=1.5;g.position.set(h.x,cy,h.z);g.rotation.y=h.f>0?0:Math.PI;
+ const fm=boxProject(new THREE.MeshStandardMaterial(FRAMES[a.frame]||FRAMES.black));
+ const add=(geo,mat,x,y,z,sh=true)=>{const o=new THREE.Mesh(geo,mat);o.position.set(x,y,z);o.castShadow=sh;o.receiveShadow=true;g.add(o);return o};
+ add(new RoundedBoxGeometry(W2+2*fw,fw,fd,2,.004),fm,0,H2/2+fw/2,fd/2);add(new RoundedBoxGeometry(W2+2*fw,fw,fd,2,.004),fm,0,-H2/2-fw/2,fd/2);
+ add(new RoundedBoxGeometry(fw,H2+.002,fd,2,.004),fm,W2/2+fw/2,0,fd/2);add(new RoundedBoxGeometry(fw,H2+.002,fd,2,.004),fm,-W2/2-fw/2,0,fd/2);
+ add(new THREE.BoxGeometry(W2,H2,.01),fm,0,0,.005);{const cs=blob(W2+2*fw+.08,H2+2*fw+.08,.28);cs.position.z=.0012;g.add(cs)}
+ const zm=fd-.012,ms=new THREE.Shape();ms.moveTo(-W2/2,-H2/2);ms.lineTo(W2/2,-H2/2);ms.lineTo(W2/2,H2/2);ms.lineTo(-W2/2,H2/2);
+ const hole=new THREE.Path();hole.moveTo(-w/2,-ht/2);hole.lineTo(-w/2,ht/2);hole.lineTo(w/2,ht/2);hole.lineTo(w/2,-ht/2);ms.holes.push(hole);
+ add(new THREE.ShapeGeometry(ms),matM,0,0,zm,false);add(new THREE.PlaneGeometry(w+.012,ht+.012),coreM,0,0,zm-.0035,false);
+ t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=ANI;
+ const am=add(new THREE.PlaneGeometry(w,ht),new THREE.MeshStandardMaterial({map:t,roughness:.82}),0,0,zm-.003,false);am.userData.i=i;artMeshes[i]=am;
+ add(new THREE.PlaneGeometry(W2,H2),artGlassM,0,0,fd-.006,false);
+ /* wall label */
+ const lx=W2/2+fw+.26;add(new RoundedBoxGeometry(.17,.1,.006,2,.0015),new THREE.MeshStandardMaterial({color:0xf7f5f0,roughness:.35}),lx,-.12,.003);
+ add(new THREE.PlaneGeometry(.164,.096),new THREE.MeshStandardMaterial({map:label(a),roughness:.5}),lx,-.12,.0062,false);
+ /* ceiling track spot aimed at the piece */
+ const off=1.4,can=new THREE.Mesh(new THREE.CylinderGeometry(.052,.044,.17,24),steelM);can.position.set(0,H-.24-cy,off);g.add(can);
+ const dir=can.position.clone().negate().normalize();can.quaternion.setFromUnitVectors(new THREE.Vector3(0,-1,0),dir);
+ const lens=new THREE.Mesh(new THREE.CircleGeometry(.042,24),lensM);lens.position.y=-.086;lens.rotation.x=Math.PI/2;can.add(lens);
+ const stem=new THREE.Mesh(new THREE.CylinderGeometry(.009,.009,.2,8),steelM);stem.position.set(0,H-.1-cy,off);g.add(stem);
+ const sp=new THREE.SpotLight(0xffeedd,a.lux??20,0,Math.atan((Math.max(W2,H2)/2+.4)/can.position.length()),.85,2);
+ sp.position.copy(can.position).addScaledVector(dir,.1);sp.target.position.y=-.2;g.add(sp,sp.target);sp.castShadow=true;sp.shadow.mapSize.set(1024,1024);sp.shadow.bias=-.0004;sp.shadow.normalBias=.015;Object.assign(sp.shadow.camera,{near:.3,far:5});
+ scene.add(g);g.updateMatrixWorld(true);artGroups[i]=g;renderer.shadowMap.needsUpdate=true}
+ARTWORKS.forEach((a,i)=>pending.push(TL.loadAsync(encodeURI(a.src)).then(t=>hang(i,t))));
+/* flush ceiling downlights (off during the day) */
+{const ringM=new THREE.MeshStandardMaterial({color:0xf2f2f0,roughness:.35,metalness:.2}),innerM=new THREE.MeshStandardMaterial({color:0x2a2a2a,roughness:.6});
+[[2.3,3.6],[7.3,3.6],[7.3,-1.9]].forEach(([x,z])=>{const r=new THREE.Mesh(new THREE.CylinderGeometry(.075,.075,.008,32),ringM);r.position.set(x,H-.004,z);scene.add(r);
+ const c=new THREE.Mesh(new THREE.CircleGeometry(.05,32),innerM);c.rotation.x=Math.PI/2;c.position.set(x,H-.0085,z);scene.add(c)})}
+/* track rails */
+const rail=(x0,x1,z0,z1)=>box(x0,x1,H-.035,H,z0,z1,steelM,false);
+rail(.3,UX-.3,1.383,1.417);rail(UX+.3,W-.3,UZ+1.383,UZ+1.417);rail(.3,W-.3,D-1.417,D-1.383);
+
+/* ---------- furniture (Poly Haven CC0 scans) ---------- */
+const FURN=[
+ ['sofa_02/sofa_02_2k.gltf',7.35,-2.45,Math.PI],
+ ['modern_coffee_table_01/modern_coffee_table_01_1k.gltf',7.35,-3.75,Math.PI/2],
+ ['potted_plant_04/potted_plant_04_1k.gltf',7.0,-3.72,.4,.39],
+ ['mid_century_lounge_chair/mid_century_lounge_chair_1k.gltf',8.75,3.7,-2.1,0,.32],
+ ['Ottoman_01/Ottoman_01_1k.gltf',5.9,4.2,0],
+ ['potted_plant_02/potted_plant_02_lod.gltf',9.4,5.4,.6],
+ ['potted_plant_01/potted_plant_01_lod.gltf',.48,.5,0],
+ ['potted_plant_01/potted_plant_01_lod.gltf',5.2,-5.0,2.1],
+ ['Ottoman_01/Ottoman_01_1k.gltf',2.35,2.0,Math.PI/2],
+ ['potted_plant_02/potted_plant_02_lod.gltf',.55,5.4,2.4]];
+const solid=[],gltfs={};
+FURN.forEach(([u,x,z,ry,y=0,op=.5])=>{gltfs[u]??=GL.loadAsync('assets/models/'+u);pending.push(gltfs[u].then(gl=>{
+ const o=gl.scene.clone(true),lb=new THREE.Box3().setFromObject(o),cs=blob((lb.max.x-lb.min.x)*1.12,(lb.max.z-lb.min.z)*1.12,op);
+ cs.rotation.x=-Math.PI/2;cs.position.set((lb.min.x+lb.max.x)/2,lb.min.y+.003,(lb.min.z+lb.max.z)/2);o.add(cs);o.rotation.y=ry;o.traverse(c=>{if(c.isMesh){c.castShadow=c.receiveShadow=true;if(c.material.map)c.material.map.anisotropy=ANI}});
+ scene.add(o);o.updateMatrixWorld(true);const b=new THREE.Box3().setFromObject(o);o.position.set(x-(b.min.x+b.max.x)/2,y-b.min.y,z-(b.min.z+b.max.z)/2);o.updateMatrixWorld(true);
+ if(!y){b.setFromObject(o);solid.push([b.min.x,b.max.x,b.min.z,b.max.z])}}))});
+
+/* ---------- dust drifting in the sunlight ---------- */
+/* each mote starts at a random point in a window opening and is pushed back along the sun ray, so it sits inside a real beam */
+const dN=320,dp=new Float32Array(dN*3),rnd=Math.random;
+for(let i=0;i<dN;i++){const b=bays[rnd()*bays.length|0],y=SILL+.05+rnd()*(HEAD-SILL-.1),t=rnd()*.92*y/SUN.y;dp[i*3]=GX-SUN.x*t;dp[i*3+1]=y-SUN.y*t;dp[i*3+2]=b[0]+.05+rnd()*(b[1]-b[0]-.1)-SUN.z*t}
+const dg=new THREE.BufferGeometry();dg.setAttribute('position',new THREE.BufferAttribute(dp,3));
+const dt=(()=>{const c=document.createElement('canvas');c.width=c.height=32;const x=c.getContext('2d'),g=x.createRadialGradient(16,16,0,16,16,16);g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(1,'rgba(255,255,255,0)');x.fillStyle=g;x.fillRect(0,0,32,32);return new THREE.CanvasTexture(c)})();
+const dust=new THREE.Points(dg,new THREE.PointsMaterial({map:dt,size:.013,transparent:true,opacity:.45,depthWrite:false,blending:THREE.AdditiveBlending,color:0xfff2d8}));scene.add(dust);
+
+/* ---------- light the room from itself: capture a probe of the lit room and use it as ambient + reflections ---------- */
+const cubeRT=new THREE.WebGLCubeRenderTarget(256,{type:THREE.HalfFloatType}),cubeCam=new THREE.CubeCamera(.05,400,cubeRT);cubeCam.position.copy(BP.pos.value);let envRT;
+function capture(){dust.visible=false;scene.environmentIntensity=1;for(let k=0;k<3;k++){cubeCam.update(renderer,scene);const e=pmrem.fromCubemap(cubeRT.texture);if(envRT)envRT.dispose();envRT=e;scene.environment=e.texture}dust.visible=true}
+
+/* ---------- post: bloom, filmic tone map, lens ---------- */
+/* only the scene render is multisampled; the post chain runs single-sample (far cheaper on integrated GPUs) */
+class MSAARenderPass extends Pass{constructor(){super();this.needsSwap=false;this.q=new FullScreenQuad(new THREE.ShaderMaterial({...CopyShader,uniforms:{tDiffuse:{value:null},opacity:{value:1}},depthTest:false,depthWrite:false}));this.setSize(1,1)}
+ /* rebuilt on resize: resizing a multisampled target that carries a depth texture leaves them mismatched */
+ setSize(w,h){if(this.rt){if(this.rt.width===w&&this.rt.height===h)return;this.rt.depthTexture.dispose();this.rt.dispose()}
+  this.rt=new THREE.WebGLRenderTarget(w,h,{type:THREE.HalfFloatType,samples:4,depthTexture:new THREE.DepthTexture(w,h)});this.q.material.uniforms.tDiffuse.value=this.rt.texture;if(this.onResize)this.onResize(this.rt)}
+ render(r,wb,rb){r.setRenderTarget(this.rt);r.clear();r.render(scene,cam);r.setRenderTarget(rb);this.q.render(r)}}
+const composer=new EffectComposer(renderer,new THREE.WebGLRenderTarget(1,1,{type:THREE.HalfFloatType}));
+const msaa=new MSAARenderPass();composer.addPass(msaa);
+/* camera focus: whatever is seen through the glass (garden, sky, terrace) is softly out of focus, like a photo focused on the room */
+const focus=new ShaderPass({uniforms:{tDiffuse:{value:null},tDepth:{value:null},projInv:{value:cam.projectionMatrixInverse},camWorld:{value:cam.matrixWorld},px:{value:new THREE.Vector2(1,1)},radius:{value:6}},
+ vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+ fragmentShader:`uniform sampler2D tDiffuse,tDepth;uniform mat4 projInv,camWorld;uniform vec2 px;uniform float radius;varying vec2 vUv;
+ float outside(vec2 uv){float d=texture2D(tDepth,uv).x;if(d>=1.)return 1.;vec4 v=projInv*vec4(uv*2.-1.,d*2.-1.,1.);v/=v.w;return step(${f3(GX+.06)},(camWorld*v).x);}
+ void main(){vec4 c=texture2D(tDiffuse,vUv);if(outside(vUv)<.5){gl_FragColor=c;return;}
+  vec3 s=c.rgb;float n=1.;
+  for(int i=1;i<24;i++){float r=sqrt(float(i)/23.)*radius,a=float(i)*2.39996;vec2 uv=vUv+vec2(cos(a),sin(a))*r*px;float w=outside(uv);s+=texture2D(tDiffuse,uv).rgb*w;n+=w;}
+  gl_FragColor=vec4(s/n,c.a);}`});
+composer.addPass(focus);msaa.onResize=rt=>focus.uniforms.tDepth.value=rt.depthTexture;msaa.onResize(msaa.rt);
+const bloom=new UnrealBloomPass(new THREE.Vector2(256,256),.22,.6,2.4);composer.addPass(bloom);
+composer.addPass(new OutputPass());
+const fin=new ShaderPass({uniforms:{tDiffuse:{value:null},uTime:{value:0},uRes:{value:new THREE.Vector2(1,1)}},
+ vertexShader:'varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',
+ fragmentShader:`uniform sampler2D tDiffuse;uniform float uTime;uniform vec2 uRes;varying vec2 vUv;
+ float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+ void main(){vec2 d=vUv-.5;float r=dot(d,d);vec2 o=d*r*.01;
+  vec3 c=vec3(texture2D(tDiffuse,vUv-o).r,texture2D(tDiffuse,vUv).g,texture2D(tDiffuse,vUv+o).b);
+  c*=vec3(.975,1.,1.035);c=mix(c,c*c*(3.-2.*c),.22);c*=1.-r*.6;
+  c+=(h(vUv*uRes+fract(uTime*7.13)*91.7)-.5)*.018;gl_FragColor=vec4(c,1.);}`});
+composer.addPass(fin);
+
+let PR=Math.min(devicePixelRatio,1.5);const PRmax=PR;
+function resize(){if(!innerWidth||!innerHeight)return;renderer.setPixelRatio(PR);composer.setPixelRatio(PR);renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);fin.uniforms.uRes.value.set(innerWidth*PR,innerHeight*PR);focus.uniforms.px.value.set(1/(innerWidth*PR),1/(innerHeight*PR));focus.uniforms.radius.value=innerHeight*PR*.0075;cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}
+addEventListener('resize',resize);resize();
+
+/* ---------- controls ---------- */
+const R=.3,ok=(x,z)=>{const inA=(x>=R&&x<=W-R&&z>=R&&z<=D-R)||(x>=UX+R&&x<=W-R&&z>=UZ+R&&z<=D-R);return inA&&!solid.some(b=>x>b[0]-R&&x<b[1]+R&&z>b[2]-R&&z<b[3]+R)};
+let px=1.1,pz=3.2,yaw=-Math.PI/2+.12,pitch=-.02,locked=false,drag=false,wasLocked=false,look=-1,ready=false;const vel={x:0,z:0},keys={};
+const lock=()=>{try{const p=dom.requestPointerLock();if(p&&p.catch)p.catch(()=>{})}catch(e){}};
+ov.onclick=()=>{if(!ready)return;ov.style.display='none';lock()};
+document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===dom;if(!locked&&wasLocked)ov.style.display='flex';wasLocked=locked});
+addEventListener('keydown',e=>{keys[e.code]=true;if(e.code.startsWith('Arrow')||e.code=='Space')e.preventDefault()});addEventListener('keyup',e=>keys[e.code]=false);
+dom.addEventListener('pointerdown',()=>{drag=true;if(!locked)lock()});addEventListener('pointerup',()=>drag=false);
+addEventListener('pointermove',e=>{if(locked||drag){yaw-=e.movementX*.0022;pitch=Math.max(-1.3,Math.min(1.3,pitch-e.movementY*.0022))}});
+addEventListener('dragover',e=>e.preventDefault());
+addEventListener('drop',e=>{e.preventDefault();const f=e.dataTransfer.files[0];if(!f||!f.type.startsWith('image/'))return;const i=look>=0?look:0,u=URL.createObjectURL(f);TL.load(u,t=>hang(i,t))});
+
+/* ---------- go ---------- */
+Promise.allSettled(pending).then(()=>{renderer.shadowMap.needsUpdate=true;capture();ready=true;ov.classList.add('ready');
+ if(errs.length&&!msg.textContent)msg.textContent='Some files failed to load: '+errs.slice(0,3).join(', ')});
+const clock=new THREE.Clock(),rc=new THREE.Raycaster(),ctr=new THREE.Vector2();let t=0,lastCap=-2,acc=0,fr=0;
+renderer.setAnimationLoop(()=>{const dtm=Math.min(clock.getDelta(),.05);t+=dtm;if(!innerWidth||!innerHeight)return;
+ if(keys.ArrowLeft)yaw+=1.8*dtm;if(keys.ArrowRight)yaw-=1.8*dtm;
+ const f=(keys.KeyW||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0),s=(keys.KeyD?1:0)-(keys.KeyA?1:0),spd0=keys.ShiftLeft||keys.ShiftRight?3.6:1.9,k=Math.min(1,dtm*7);
+ vel.x+=((-Math.sin(yaw)*f+Math.cos(yaw)*s)*spd0-vel.x)*k;vel.z+=((-Math.cos(yaw)*f-Math.sin(yaw)*s)*spd0-vel.z)*k;
+ if(ok(px+vel.x*dtm,pz))px+=vel.x*dtm;if(ok(px,pz+vel.z*dtm))pz+=vel.z*dtm;
+ const spd=Math.min(1,Math.hypot(vel.x,vel.z)/1.9);cam.position.set(px,EYE+Math.sin(t*8.2)*.009*spd,pz);cam.rotation.set(pitch,yaw,Math.sin(t*4.1)*.0025*spd);
+ rc.setFromCamera(ctr,cam);const hit=rc.intersectObjects(artMeshes.filter(Boolean))[0],i=hit&&hit.distance<6?hit.object.userData.i:-1;look=i;
+ if(i!==lastCap){lastCap=i;if(i>=0){cap.innerHTML=`${ARTWORKS[i].title}<small>${ARTWORKS[i].artist}</small>`;cap.style.opacity=1}else cap.style.opacity=0}
+ const p=dg.attributes.position;for(let j=0;j<dN;j++){p.array[j*3+1]+=Math.sin(t*.4+j)*.0004;p.array[j*3]+=Math.cos(t*.3+j*1.7)*.0003;p.array[j*3+2]+=Math.sin(t*.25+j*.6)*.0004}p.needsUpdate=true;
+ fin.uniforms.uTime.value=t;composer.render(dtm);
+ /* keep the frame rate smooth: trade resolution for speed on slower GPUs */
+ acc+=dtm;fr++;if(acc>2){const avg=acc/fr;acc=fr=0;if(avg>1/38&&PR>.6){PR=Math.max(.6,PR-.15);resize()}else if(avg<1/58&&PR<PRmax){PR=Math.min(PRmax,PR+.1);resize()}}});
+</script></body></html>
